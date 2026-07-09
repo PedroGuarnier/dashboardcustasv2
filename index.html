@@ -6,7 +6,7 @@
 <title>Custas Diárias 2026 — EAZ</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600&family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/msal-browser/3.14.0/browser/msal-browser.min.js"></script>
+<script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js"></script>
 <style>
 :root{
   --navy-0:#070E1A;
@@ -392,6 +392,10 @@ function encodeShareUrl(url){
 }
 
 async function connectGraph(){
+  if(typeof msal === 'undefined'){
+    alert('A biblioteca de login da Microsoft não carregou (bloqueio de rede ou CDN fora do ar). Recarregue a página; se persistir, verifique se algum bloqueador de anúncios/firewall está travando alcdn.msauth.net.');
+    return;
+  }
   cfg = {
     tenant: document.getElementById('cfg-tenant').value.trim(),
     client: document.getElementById('cfg-client').value.trim(),
@@ -403,7 +407,6 @@ async function connectGraph(){
       auth:{ clientId: cfg.client, authority:`https://login.microsoftonline.com/${cfg.tenant}`, redirectUri: window.location.origin + window.location.pathname },
       cache:{ cacheLocation:'memoryStorage' }
     });
-    await msalApp.initialize();
     const res = await msalApp.loginPopup({ scopes:['Files.Read.All'] });
     account = res.account;
     closeDrawer();
