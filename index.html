@@ -234,14 +234,14 @@ td.num{font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums;t
     <input id="cfg-tenant" placeholder="ex.: contoso.onmicrosoft.com ou GUID">
     <label>Client ID (App Registration)</label>
     <input id="cfg-client" placeholder="GUID do app registrado no Entra ID">
-    <label>Caminho do arquivo no OneDrive/SharePoint</label>
-    <input id="cfg-path" value="/CUSTAS2026_diario_v16.xlsx" placeholder="/pasta/CUSTAS2026_diario_v16.xlsx">
+    <label>Link de compartilhamento da planilha</label>
+    <input id="cfg-share" value="https://zveiter-my.sharepoint.com/:x:/r/personal/anaqueiroz_zveiter_adv_br/Documents/%C3%81rea%20de%20Trabalho/CUSTAS%202026/CUSTAS2026_diario_v16.xlsx?d=w0b509d70015a48629c916eed6770ed30&csf=1&web=1&e=O1uNbc" placeholder="Cole o link de compartilhamento do OneDrive/SharePoint">
     <div class="actions">
       <button class="ghost" onclick="closeDrawer()">Cancelar</button>
       <button class="ghost" onclick="connectGraph()">Entrar com conta Microsoft</button>
     </div>
     <div class="note">
-      Requer um App Registration no Entra ID com permissão delegada <b>Files.Read</b> (ou Files.Read.All para arquivo compartilhado) e este endereço na lista de Redirect URIs (tipo SPA). O login usa a conta Microsoft do próprio usuário — nenhuma senha passa pelo dashboard.
+      O arquivo está no OneDrive da Ana Queiroz, não no seu — por isso a conexão usa o link de compartilhamento em vez do caminho direto. Requer um App Registration no Entra ID com permissão delegada <b>Files.Read.All</b> e este endereço na lista de Redirect URIs (tipo SPA). O login usa a sua conta Microsoft — nenhuma senha passa pelo dashboard, e você só consegue ler o arquivo se já tiver permissão de acesso a ele (compartilhado com você ou com a EAZ).
     </div>
   </div>
 </div>
@@ -386,20 +386,25 @@ function openDrawer(){ document.getElementById('drawer').classList.add('open'); 
 function closeDrawer(){ document.getElementById('drawer').classList.remove('open'); }
 document.getElementById('drawer').addEventListener('click', e=>{ if(e.target.id==='drawer') closeDrawer(); });
 
+function encodeShareUrl(url){
+  const b64 = btoa(unescape(encodeURIComponent(url))).replace(/=+$/,'').replace(/\//g,'_').replace(/\+/g,'-');
+  return 'u!' + b64;
+}
+
 async function connectGraph(){
   cfg = {
     tenant: document.getElementById('cfg-tenant').value.trim(),
     client: document.getElementById('cfg-client').value.trim(),
-    path:   document.getElementById('cfg-path').value.trim()
+    shareUrl: document.getElementById('cfg-share').value.trim()
   };
-  if(!cfg.tenant || !cfg.client || !cfg.path){ alert('Preencha Tenant ID, Client ID e o caminho do arquivo.'); return; }
+  if(!cfg.tenant || !cfg.client || !cfg.shareUrl){ alert('Preencha Tenant ID, Client ID e o link de compartilhamento.'); return; }
   try{
     msalApp = new msal.PublicClientApplication({
       auth:{ clientId: cfg.client, authority:`https://login.microsoftonline.com/${cfg.tenant}`, redirectUri: window.location.origin + window.location.pathname },
       cache:{ cacheLocation:'memoryStorage' }
     });
     await msalApp.initialize();
-    const res = await msalApp.loginPopup({ scopes:['Files.Read','Files.Read.All'] });
+    const res = await msalApp.loginPopup({ scopes:['Files.Read.All'] });
     account = res.account;
     closeDrawer();
     setLive(true);
@@ -407,13 +412,13 @@ async function connectGraph(){
     pollTimer = setInterval(()=>refreshFromGraph(false), 30000);
   }catch(err){
     console.error(err);
-    alert('Falha na conexão: ' + (err.errorMessage||err.message) + '\n\nVerifique o App Registration (plataforma SPA + redirect URI desta página) e as permissões Files.Read.');
+    alert('Falha na conexão: ' + (err.errorMessage||err.message) + '\n\nVerifique o App Registration (plataforma SPA + redirect URI desta página) e a permissão Files.Read.All (admin consent concedido).');
     setLive(false);
   }
 }
 
 async function token(){
-  const req = { scopes:['Files.Read','Files.Read.All'], account };
+  const req = { scopes:['Files.Read.All'], account };
   try{ return (await msalApp.acquireTokenSilent(req)).accessToken; }
   catch{ return (await msalApp.acquireTokenPopup(req)).accessToken; }
 }
@@ -425,19 +430,29 @@ async function gfetch(url){
   return r.json();
 }
 
+let driveId = null, itemId = null;
+
 async function refreshFromGraph(force){
   try{
-    /* 1. Checagem barata: o arquivo mudou? */
-    const meta = await gfetch(`/me/drive/root:${encodeURI(cfg.path)}?$select=id,lastModifiedDateTime`);
+    /* 1. Resolve o link de compartilhamento para driveId + itemId (uma vez só) */
+    if(!driveId || !itemId){
+      const shareId = encodeShareUrl(cfg.shareUrl);
+      const resolved = await gfetch(`/shares/${shareId}/driveItem?$select=id,lastModifiedDateTime,parentReference`);
+      driveId = resolved.parentReference.driveId;
+      itemId = resolved.id;
+    }
+
+    /* 2. Checagem barata: o arquivo mudou? */
+    const meta = await gfetch(`/drives/${driveId}/items/${itemId}?$select=id,lastModifiedDateTime`);
     if(!force && meta.lastModifiedDateTime === lastModified) return;
     lastModified = meta.lastModifiedDateTime;
 
-    /* 2. Lista as abas e lê o usedRange das abas mensais de 2026 */
-    const sheets = await gfetch(`/me/drive/items/${meta.id}/workbook/worksheets?$select=name`);
+    /* 3. Lista as abas e lê o usedRange das abas mensais de 2026 */
+    const sheets = await gfetch(`/drives/${driveId}/items/${itemId}/workbook/worksheets?$select=name`);
     const monthly = sheets.value.map(s=>s.name).filter(n=>MONTHS.includes(n.trim().toUpperCase()));
     const newData = [];
     for(const sh of monthly){
-      const rng = await gfetch(`/me/drive/items/${meta.id}/workbook/worksheets('${encodeURIComponent(sh)}')/usedRange(valuesOnly=true)?$select=values`);
+      const rng = await gfetch(`/drives/${driveId}/items/${itemId}/workbook/worksheets('${encodeURIComponent(sh)}')/usedRange(valuesOnly=true)?$select=values`);
       const vals = rng.values || [];
       /* linhas de dados começam na linha 7 da planilha (índice 6) */
       for(let i=6;i<vals.length;i++){
